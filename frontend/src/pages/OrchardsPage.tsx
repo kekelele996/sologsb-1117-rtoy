@@ -1,14 +1,17 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
+import { useNavigate } from 'react-router-dom'
+import { Button, Card, Col, DatePicker, Form, Input, InputNumber, List, Modal, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
-import type { DropPoint, Orchard } from '@/types'
-import { ACCESSIBILITIES, CROPS, suggestColonyBoxes } from '@/types'
+import type { DropPoint, ExecutionStatus, Orchard, TransitRoute } from '@/types'
+import { ACCESSIBILITIES, CROPS, EXECUTION_STATUSES, suggestColonyBoxes } from '@/types'
 import CoordPicker from '@/components/common/CoordPicker'
 import FlowerWindowBar from '@/components/common/FlowerWindowBar'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { orchardStore } from '@/stores/orchardStore'
-import { droppointStore } from '@/stores/droppointStore'
+import { droppointStore, type DropBloomChangeResult } from '@/stores/droppointStore'
+import { routeStore, type RouteBloomChangeResult } from '@/stores/routeStore'
 import { colonyStore } from '@/stores/colonyStore'
+import { bloomChangeText, isBloomChanged } from '@/utils/bloomReview'
 import { bloomDays } from '@/utils/geo'
 import { uid } from '@/utils/id'
 
@@ -37,6 +40,7 @@ interface DropFormValues {
 
 /** 果园地块管理：录入面积与花期后自动给出建议箱数与可达性标记，并维护投放点 */
 export default function OrchardsPage(): JSX.Element {
+  const navigate = useNavigate()
   const orchards = usePersistentStore(orchardStore, (state) => state.rows)
   const dropPoints = usePersistentStore(droppointStore, (state) => state.rows)
   const colonies = usePersistentStore(colonyStore, (state) => state.rows)
@@ -50,6 +54,15 @@ export default function OrchardsPage(): JSX.Element {
   const [dropOwner, setDropOwner] = useState<Orchard | null>(null)
   const [dropCoord, setDropCoord] = useState({ longitude: 107.41, latitude: 34.61 })
   const [dropForm] = Form.useForm<DropFormValues>()
+  const [dropExecution, setDropExecution] = useState<ExecutionStatus>('未开始')
+
+  /** 保存新花期后的复核结果弹窗 */
+  const [impact, setImpact] = useState<{
+    orchardName: string
+    changeText: string
+    drops: DropBloomChangeResult
+    routeImpact: RouteBloomChangeResult
+  } | null>(null)
 
   const watchedArea = Form.useWatch('areaMu', orchardForm) ?? 0
   const watchedIntensity = Form.useWatch('colonyIntensity', orchardForm) ?? 0
@@ -117,8 +130,26 @@ export default function OrchardsPage(): JSX.Element {
         .filter((item) => Number.isFinite(item) && item > 0),
       note: values.note?.trim() ?? ''
     }
+    const before = editingOrchard
     await orchardStore.getState().save(row)
-    message.success(`地块「${row.name}」已保存，建议蜂群 ${suggestColonyBoxes(row)} 箱`)
+
+    // 编辑时花期发生变化：未开始的投放点 / 转场路线转待确认，已开始 / 完成的保持原计划时间
+    if (before && isBloomChanged(before, row)) {
+      const oldBloom = { bloomStart: before.bloomStart, bloomEnd: before.bloomEnd }
+      const newBloom = { bloomStart: row.bloomStart, bloomEnd: row.bloomEnd }
+      const [dropImpact, routeImpact] = await Promise.all([
+        droppointStore.getState().applyBloomChange(row.id, oldBloom, newBloom),
+        routeStore.getState().applyBloomChange(row.id, oldBloom, newBloom)
+      ])
+      setImpact({
+        orchardName: row.name,
+        changeText: bloomChangeText(oldBloom, newBloom),
+        drops: dropImpact,
+        routeImpact
+      })
+    } else {
+      message.success(`地块「${row.name}」已保存，建议蜂群 ${suggestColonyBoxes(row)} 箱`)
+    }
     setOrchardModal(false)
   }
 
@@ -135,6 +166,7 @@ export default function OrchardsPage(): JSX.Element {
   function openDrop(orchard: Orchard): void {
     setDropOwner(orchard)
     setDropCoord({ longitude: orchard.longitude, latitude: orchard.latitude })
+    setDropExecution('未开始')
     const index = dropPoints.filter((item) => item.orchardId === orchard.id).length + 1
     dropForm.setFieldsValue({
       code: `${orchard.crop.slice(0, 1)}-${String(index).padStart(2, '0')}`,
@@ -164,7 +196,13 @@ export default function OrchardsPage(): JSX.Element {
       dropWindow: values.dropWindow.format('YYYY-MM-DD'),
       withdrawTime: values.withdrawTime.format('YYYY-MM-DD'),
       owner: values.owner?.trim() ?? '',
-      colonyCodes: values.colonyCodes ?? []
+      colonyCodes: values.colonyCodes ?? [],
+      executionStatus: dropExecution,
+      reviewStatus: '已确认',
+      proposedDropWindow: '',
+      proposedWithdrawTime: '',
+      bloomAnchorStart: '',
+      bloomAnchorEnd: ''
     }
     await droppointStore.getState().save(row)
     message.success(`投放点 ${row.code} 已保存`)
@@ -228,9 +266,43 @@ export default function OrchardsPage(): JSX.Element {
                 locale={{ emptyText: '暂无投放点' }}
                 columns={[
                   { title: '编号', dataIndex: 'code', key: 'code', width: 80 },
-                  { title: '可容纳', dataIndex: 'capacityBoxes', key: 'cap', width: 80, render: (value: number) => `${value} 箱` },
-                  { title: '投放窗', dataIndex: 'dropWindow', key: 'win', width: 110 },
-                  { title: '撤场', dataIndex: 'withdrawTime', key: 'with', width: 110 },
+                  { title: '可容纳', dataIndex: 'capacityBoxes', key: 'cap', width: 72, render: (value: number) => `${value} 箱` },
+                  {
+                    title: '投放窗',
+                    key: 'win',
+                    width: 118,
+                    render: (_, record: DropPoint) =>
+                      record.reviewStatus === '待确认' ? (
+                        <Space direction="vertical" size={0}>
+                          <Typography.Text delete type="secondary" style={{ fontSize: 12 }}>
+                            {record.dropWindow}
+                          </Typography.Text>
+                          <Typography.Text strong style={{ fontSize: 12 }}>
+                            {record.proposedDropWindow}
+                          </Typography.Text>
+                        </Space>
+                      ) : (
+                        record.dropWindow
+                      )
+                  },
+                  {
+                    title: '撤场',
+                    key: 'with',
+                    width: 118,
+                    render: (_, record: DropPoint) =>
+                      record.reviewStatus === '待确认' ? (
+                        <Space direction="vertical" size={0}>
+                          <Typography.Text delete type="secondary" style={{ fontSize: 12 }}>
+                            {record.withdrawTime}
+                          </Typography.Text>
+                          <Typography.Text strong style={{ fontSize: 12 }}>
+                            {record.proposedWithdrawTime}
+                          </Typography.Text>
+                        </Space>
+                      ) : (
+                        record.withdrawTime
+                      )
+                  },
                   {
                     title: '安排群号',
                     key: 'codes',
@@ -238,9 +310,32 @@ export default function OrchardsPage(): JSX.Element {
                       record.colonyCodes.length > 0 ? record.colonyCodes.join('、') : '—'
                   },
                   {
+                    title: '复核',
+                    key: 'review',
+                    width: 84,
+                    render: (_, record: DropPoint) =>
+                      record.reviewStatus === '待确认' ? <Tag color="orange">待确认</Tag> : <Tag color="green">已确认</Tag>
+                  },
+                  {
+                    title: '执行',
+                    key: 'execution',
+                    width: 100,
+                    render: (_, record: DropPoint) => (
+                      <Select
+                        size="small"
+                        style={{ width: 88 }}
+                        value={record.executionStatus}
+                        options={EXECUTION_STATUSES.map((item) => ({ value: item, label: item }))}
+                        onChange={(value: ExecutionStatus) =>
+                          void droppointStore.getState().setExecutionStatus(record.id, value)
+                        }
+                      />
+                    )
+                  },
+                  {
                     title: '操作',
                     key: 'action',
-                    width: 80,
+                    width: 70,
                     render: (_, record: DropPoint) => (
                       <Button size="small" danger type="link" onClick={() => void droppointStore.getState().remove(record.id)}>
                         删除
@@ -355,6 +450,15 @@ export default function OrchardsPage(): JSX.Element {
                 <Input placeholder="如 北侧有防风林，午后半阴" />
               </Form.Item>
             </Col>
+            <Col span={12}>
+              <Form.Item label="执行状态（进行中 / 已完成的作业不随花期改写）">
+                <Select
+                  value={dropExecution}
+                  onChange={setDropExecution}
+                  options={EXECUTION_STATUSES.map((item) => ({ value: item, label: item }))}
+                />
+              </Form.Item>
+            </Col>
             <Col span={24}>
               <Form.Item name="colonyCodes" label="安排群号（同一群跨地块重叠即冲突）">
                 <Select mode="multiple" options={colonies.map((item) => ({ value: item.code, label: `${item.code}（${item.species} ${item.strengthFrames} 足框）` }))} />
@@ -365,6 +469,81 @@ export default function OrchardsPage(): JSX.Element {
             <CoordPicker value={dropCoord} onChange={setDropCoord} orchards={orchards} dropPoints={dropPoints} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`花期已变更 · ${impact?.orchardName ?? ''}`}
+        open={impact !== null}
+        onCancel={() => setImpact(null)}
+        width={760}
+        footer={
+          <Space>
+            <Button onClick={() => setImpact(null)}>稍后处理</Button>
+            <Button type="primary" onClick={() => navigate('/review')}>
+              前往逐项复核
+            </Button>
+          </Space>
+        }
+      >
+        {impact ? (
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <Typography.Paragraph style={{ color: '#d48806', marginBottom: 0 }}>
+              {impact.changeText}。未开始的安排已转入<b>待确认</b>并给出建议新时间；逐项确认前总表暂不可执行，导出也只带已确认的新时间。
+            </Typography.Paragraph>
+            <div>
+              <Typography.Text strong>
+                受影响的投放点（{impact.drops.pending.length}）
+                <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 'normal', marginLeft: 8 }}>
+                  原计划时间 → 建议新时间
+                </Typography.Text>
+              </Typography.Text>
+              <List
+                size="small"
+                dataSource={impact.drops.pending}
+                locale={{ emptyText: '该地块下没有未开始的投放点' }}
+                renderItem={(point: DropPoint) => (
+                  <List.Item>
+                    <Space wrap size={4}>
+                      <Tag color="orange">待确认</Tag>
+                      <Typography.Text strong>{point.code}</Typography.Text>
+                      <Typography.Text type="secondary" delete>{point.dropWindow} ~ {point.withdrawTime}</Typography.Text>
+                      <span>→</span>
+                      <Typography.Text strong>{point.proposedDropWindow} ~ {point.proposedWithdrawTime}</Typography.Text>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            </div>
+            <div>
+              <Typography.Text strong>受影响的转场路线（{impact.routeImpact.pending.length}）</Typography.Text>
+              <List
+                size="small"
+                dataSource={impact.routeImpact.pending}
+                locale={{ emptyText: '没有未开始的关联转场路线' }}
+                renderItem={(route: TransitRoute) => {
+                  const from = dropPoints.find((item) => item.id === route.fromDropId)
+                  const to = dropPoints.find((item) => item.id === route.toDropId)
+                  return (
+                    <List.Item>
+                      <Space wrap size={4}>
+                        <Tag color="orange">待确认</Tag>
+                        <Typography.Text strong>{from?.code ?? '—'} → {to?.code ?? '—'}</Typography.Text>
+                        <Typography.Text type="secondary" delete>{route.departAt.replace('T', ' ')}</Typography.Text>
+                        <span>→</span>
+                        <Typography.Text strong>{route.proposedDepartAt.replace('T', ' ')}</Typography.Text>
+                      </Space>
+                    </List.Item>
+                  )
+                }}
+              />
+            </div>
+            {impact.drops.locked.length + impact.routeImpact.locked.length > 0 ? (
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
+                另有 {impact.drops.locked.length} 个投放点、{impact.routeImpact.locked.length} 段路线已开始或完成，保留原计划时间，不随新日期改写。
+              </Typography.Paragraph>
+            ) : null}
+          </Space>
+        ) : null}
       </Modal>
     </div>
   )

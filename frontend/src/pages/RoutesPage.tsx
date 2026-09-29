@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Button, Card, Col, DatePicker, Empty, Form, Input, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
-import type { DropPoint, TransitRoute } from '@/types'
-import { VEHICLE_TYPES } from '@/types'
+import type { DropPoint, ExecutionStatus, TransitRoute } from '@/types'
+import { EXECUTION_STATUSES, VEHICLE_TYPES } from '@/types'
 import RouteMap from '@/components/common/RouteMap'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { orchardStore } from '@/stores/orchardStore'
@@ -217,12 +217,52 @@ export default function RoutesPage(): JSX.Element {
                 return point ? `${point.code}（${orchardName(point.orchardId)}）` : '—'
               }
             },
-            { title: '里程（km）', dataIndex: 'distanceKm', key: 'km', width: 110 },
-            { title: '预计耗时（h）', dataIndex: 'durationH', key: 'hour', width: 130 },
-            { title: '车辆', dataIndex: 'vehicleType', key: 'vehicle', width: 110 },
-            { title: '出发时刻', dataIndex: 'departAt', key: 'depart', width: 160 },
+            { title: '里程（km）', dataIndex: 'distanceKm', key: 'km', width: 100 },
+            { title: '预计耗时（h）', dataIndex: 'durationH', key: 'hour', width: 110 },
+            { title: '车辆', dataIndex: 'vehicleType', key: 'vehicle', width: 100 },
+            {
+              title: '出发时刻',
+              key: 'depart',
+              width: 200,
+              render: (_, record: TransitRoute) =>
+                record.reviewStatus === '待确认' ? (
+                  <Space direction="vertical" size={0}>
+                    <Typography.Text delete type="secondary" style={{ fontSize: 12 }}>
+                      {record.departAt.replace('T', ' ')}
+                    </Typography.Text>
+                    <Typography.Text strong style={{ fontSize: 12 }}>
+                      {record.proposedDepartAt.replace('T', ' ')}
+                    </Typography.Text>
+                  </Space>
+                ) : (
+                  record.departAt.replace('T', ' ')
+                )
+            },
             { title: '风险备注', dataIndex: 'riskNote', key: 'risk', render: (value: string) => value || '—' },
-            { title: '实际记录', dataIndex: 'actualNote', key: 'actual', width: 120 },
+            { title: '实际记录', dataIndex: 'actualNote', key: 'actual', width: 110 },
+            {
+              title: '复核',
+              key: 'review',
+              width: 84,
+              render: (_, record: TransitRoute) =>
+                record.reviewStatus === '待确认' ? <Tag color="orange">待确认</Tag> : <Tag color="green">已确认</Tag>
+            },
+            {
+              title: '执行',
+              key: 'execution',
+              width: 96,
+              render: (_, record: TransitRoute) => (
+                <Select
+                  size="small"
+                  style={{ width: 88 }}
+                  value={record.executionStatus}
+                  options={EXECUTION_STATUSES.map((item) => ({ value: item, label: item }))}
+                  onChange={(value: ExecutionStatus) =>
+                    void routeStore.getState().setExecutionStatus(record.id, value)
+                  }
+                />
+              )
+            },
             {
               title: '操作',
               key: 'action',

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Col, Radio, Row, Space, Table, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, Radio, Row, Space, Table, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import type { BeeColony, DropPoint, Orchard, TransitRoute } from '@/types'
 import { suggestColonyBoxes } from '@/types'
@@ -35,11 +35,20 @@ export default function ExportPage(): JSX.Element {
 
   const orchardName = (id: string): string => orchards.find((item) => item.id === id)?.name ?? '未知地块'
 
-  /** 授粉安排清单：地块 × 投放点 × 群号 */
+  /** 花期变更待确认的安排不进入导出：导出只带已确认的（新）时间 */
+  const confirmedDropPoints = useMemo(
+    () => dropPoints.filter((item) => item.reviewStatus !== '待确认'),
+    [dropPoints]
+  )
+  const confirmedRoutes = useMemo(() => routes.filter((item) => item.reviewStatus !== '待确认'), [routes])
+  const excludedDrops = dropPoints.length - confirmedDropPoints.length
+  const excludedRoutes = routes.length - confirmedRoutes.length
+
+  /** 授粉安排清单：地块 × 投放点 × 群号（待确认投放点不导出） */
   const scheduleRows = useMemo<ScheduleExportRow[]>(() => {
     const rows: ScheduleExportRow[] = []
     orchards.forEach((orchard: Orchard) => {
-      const points = dropPoints.filter((item) => item.orchardId === orchard.id)
+      const points = confirmedDropPoints.filter((item) => item.orchardId === orchard.id)
       const base = {
         orchard: orchard.name,
         crop: orchard.crop,
@@ -77,11 +86,11 @@ export default function ExportPage(): JSX.Element {
       })
     })
     return rows
-  }, [orchards, dropPoints])
+  }, [orchards, confirmedDropPoints])
 
   const routeRows = useMemo(
     () =>
-      routes.map((route: TransitRoute) => {
+      confirmedRoutes.map((route: TransitRoute) => {
         const from = dropPoints.find((item) => item.id === route.fromDropId)
         const to = dropPoints.find((item) => item.id === route.toDropId)
         return {
@@ -96,7 +105,7 @@ export default function ExportPage(): JSX.Element {
         }
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [routes, dropPoints, orchards]
+    [confirmedRoutes, dropPoints, orchards]
   )
 
   function exportSchedule(): void {
@@ -113,7 +122,7 @@ export default function ExportPage(): JSX.Element {
       { key: 'withdrawTime', label: '撤场时间' },
       { key: 'owner', label: '责任人' }
     ])
-    message.success('授粉安排清单已导出')
+    message.success(excludedDrops > 0 ? `授粉安排清单已导出（已排除 ${excludedDrops} 个待确认投放点）` : '授粉安排清单已导出')
   }
 
   function exportRoutes(): void {
@@ -127,7 +136,7 @@ export default function ExportPage(): JSX.Element {
       { key: 'riskNote', label: '途中风险' },
       { key: 'actualNote', label: '实际记录' }
     ])
-    message.success('转场路线表已导出')
+    message.success(excludedRoutes > 0 ? `转场路线表已导出（已排除 ${excludedRoutes} 段待确认路线）` : '转场路线表已导出')
   }
 
   function exportBackup(): void {
@@ -169,13 +178,22 @@ export default function ExportPage(): JSX.Element {
           <Button onClick={exportBackup}>导出全量 JSON 备份</Button>
           <Tag>地块 {orchards.length}</Tag>
           <Tag>蜂群 {colonies.length}</Tag>
-          <Tag>投放点 {dropPoints.length}</Tag>
-          <Tag>路线 {routes.length}</Tag>
+          <Tag>投放点 {confirmedDropPoints.length}{excludedDrops > 0 ? `（另有 ${excludedDrops} 待确认）` : ''}</Tag>
+          <Tag>路线 {confirmedRoutes.length}{excludedRoutes > 0 ? `（另有 ${excludedRoutes} 待确认）` : ''}</Tag>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             生成时间 {dayjs().format('YYYY-MM-DD HH:mm')}
           </Typography.Text>
         </Space>
       </Card>
+
+      {excludedDrops + excludedRoutes > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`CSV 导出只带已确认的新时间：已排除 ${excludedDrops} 个待确认投放点、${excludedRoutes} 段待确认路线`}
+          description="请先在「花期变更复核」页逐项重排并确认；全量 JSON 备份不受影响，仍包含全部原始数据。"
+        />
+      ) : null}
 
       <div className={orientation === 'landscape' ? 'print-landscape' : 'print-portrait'}>
         <Card size="small" title={`授粉安排清单（${scheduleRows.length} 行）`} style={{ marginBottom: 16 }}>
@@ -248,6 +266,9 @@ export default function ExportPage(): JSX.Element {
             </Typography.Paragraph>
             <Typography.Paragraph style={{ fontSize: 13, marginBottom: 0 }}>
               3. 点击「打印视图」后再选择打印机或另存 PDF；数据全部来自浏览器本地 IndexedDB。
+            </Typography.Paragraph>
+            <Typography.Paragraph style={{ fontSize: 13, marginBottom: 0 }}>
+              4. 花期变更后处于「待确认」的投放点与路线不进入 CSV，待逐项确认、新时间写回计划后才会导出。
             </Typography.Paragraph>
           </Card>
         </Col>

@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Layout, Menu, Statistic, Typography } from 'antd'
+import { Badge, Layout, Menu, Statistic, Typography } from 'antd'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { orchardStore } from '@/stores/orchardStore'
 import { colonyStore } from '@/stores/colonyStore'
@@ -8,11 +8,13 @@ import { routeStore } from '@/stores/routeStore'
 
 const { Sider, Header, Content } = Layout
 
+/** 前端导航（花期变更复核入口带待确认角标） */
 const NAV = [
   { key: '/', label: '季内授粉安排总表' },
   { key: '/orchards', label: '果园地块管理' },
   { key: '/colonies', label: '蜂群台账' },
   { key: '/routes', label: '转场路线规划' },
+  { key: '/review', label: '花期变更复核' },
   { key: '/export', label: '导出与打印' }
 ]
 
@@ -24,6 +26,9 @@ export default function AppLayout(): JSX.Element {
   const routes = usePersistentStore(routeStore, (state) => state.rows)
 
   const totalKm = Math.round(routes.reduce((sum, item) => sum + item.distanceKm, 0) * 100) / 100
+  const pendingReview =
+    dropPoints.filter((item) => item.reviewStatus === '待确认').length +
+    routes.filter((item) => item.reviewStatus === '待确认').length
 
   return (
     <Layout className="app-shell">
@@ -41,13 +46,31 @@ export default function AppLayout(): JSX.Element {
           selectedKeys={[window.location.pathname]}
           items={NAV.map((item) => ({
             key: item.key,
-            label: <NavLink to={item.key}>{item.label}</NavLink>
+            label: (
+              <NavLink to={item.key}>
+                {item.key === '/review' && pendingReview > 0 ? (
+                  <Badge count={pendingReview} size="small" offset={[8, -2]} title={`${pendingReview} 项待复核`}>
+                    {item.label}
+                  </Badge>
+                ) : (
+                  item.label
+                )}
+              </NavLink>
+            )
           }))}
         />
         <div style={{ padding: 16 }}>
           <Statistic title={<span style={{ color: '#a9b3ad', fontSize: 12 }}>已入册地块</span>} value={orchards.length} valueStyle={{ color: '#f2c14e' }} />
           <Statistic title={<span style={{ color: '#a9b3ad', fontSize: 12 }}>蜂群 / 投放点</span>} value={`${colonies.length} / ${dropPoints.length}`} valueStyle={{ color: '#f2c14e', fontSize: 18 }} />
           <Statistic title={<span style={{ color: '#a9b3ad', fontSize: 12 }}>转场里程合计</span>} value={`${totalKm} km`} valueStyle={{ color: '#f2c14e', fontSize: 18 }} />
+          {pendingReview > 0 ? (
+            <Statistic
+              title={<span style={{ color: '#ffbb96', fontSize: 12 }}>花期变更待复核</span>}
+              value={pendingReview}
+              suffix="项"
+              valueStyle={{ color: '#ffa940', fontSize: 18 }}
+            />
+          ) : null}
           <Typography.Paragraph style={{ color: '#7f8d82', fontSize: 11, marginTop: 12, marginBottom: 0 }}>
             数据保存在浏览器 IndexedDB，无需后端服务
           </Typography.Paragraph>

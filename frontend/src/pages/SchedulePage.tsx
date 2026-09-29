@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { Alert, Card, Col, Row, Segmented, Space, Table, Tag, Typography } from 'antd'
+import { Link } from 'react-router-dom'
+import { Alert, Button, Card, Col, Row, Segmented, Space, Table, Tag, Typography } from 'antd'
 import type { BeeColony, DropPoint, Orchard } from '@/types'
 import FlowerWindowBar from '@/components/common/FlowerWindowBar'
 import RouteMap from '@/components/common/RouteMap'
@@ -36,6 +37,10 @@ interface ScheduleRow {
   placedCodes: string[]
   dropCodes: string[]
   conflicted: boolean
+  /** 该地块下待确认的投放点数（花期已改但尚未逐项确认） */
+  pendingDrops: number
+  /** 与该地块相关的待确认转场路线数 */
+  pendingRoutes: number
 }
 
 /** 季内授粉安排总表：日期条带展示花期与已投放群体，冲突处标红 */
@@ -96,22 +101,29 @@ export default function SchedulePage(): JSX.Element {
     return result
   }, [placements])
 
-  const rows = useMemo<ScheduleRow[]>(
-    () =>
-      orchards.map((orchard) => {
-        const related = placements.filter((item) => item.orchardId === orchard.id)
-        return {
-          key: orchard.id,
-          orchard,
-          days: bloomDays(orchard),
-          suggest: suggestColonyBoxes(orchard),
-          placedCodes: Array.from(new Set(related.map((item) => item.colonyCode))),
-          dropCodes: Array.from(new Set(related.map((item) => item.dropCode))),
-          conflicted: conflicts.some((item) => item.a.orchardId === orchard.id || item.b.orchardId === orchard.id)
-        }
-      }),
-    [orchards, placements, conflicts]
-  )
+  const pendingDropPoints = useMemo(() => dropPoints.filter((item) => item.reviewStatus === '待确认'), [dropPoints])
+  const pendingRoutes = useMemo(() => routes.filter((item) => item.reviewStatus === '待确认'), [routes])
+  const pendingTotal = pendingDropPoints.length + pendingRoutes.length
+
+  const rows = useMemo<ScheduleRow[]>(() => {
+    const orchardByDrop = new Map(dropPoints.map((point) => [point.id, point.orchardId]))
+    return orchards.map((orchard) => {
+      const related = placements.filter((item) => item.orchardId === orchard.id)
+      return {
+        key: orchard.id,
+        orchard,
+        days: bloomDays(orchard),
+        suggest: suggestColonyBoxes(orchard),
+        placedCodes: Array.from(new Set(related.map((item) => item.colonyCode))),
+        dropCodes: Array.from(new Set(related.map((item) => item.dropCode))),
+        conflicted: conflicts.some((item) => item.a.orchardId === orchard.id || item.b.orchardId === orchard.id),
+        pendingDrops: pendingDropPoints.filter((item) => item.orchardId === orchard.id).length,
+        pendingRoutes: pendingRoutes.filter(
+          (route) => orchardByDrop.get(route.fromDropId) === orchard.id || orchardByDrop.get(route.toDropId) === orchard.id
+        ).length
+      }
+    })
+  }, [orchards, placements, conflicts, pendingDropPoints, pendingRoutes, dropPoints])
 
   const visibleRows = scope === 'conflict' ? rows.filter((row) => row.conflicted) : rows
   const totalSuggest = rows.reduce((sum, row) => sum + row.suggest, 0)
@@ -138,6 +150,22 @@ export default function SchedulePage(): JSX.Element {
           ]}
         />
       </div>
+
+      {pendingTotal > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          action={
+            <Button type="primary" size="small">
+              <Link to="/review">前往逐项复核</Link>
+            </Button>
+          }
+          message={`花期变更待复核 ${pendingTotal} 项（投放点 ${pendingDropPoints.length}、转场路线 ${pendingRoutes.length}），总表暂不可执行`}
+          description="这些安排仍按旧花期显示；请逐项调整建议新时间并确认，全部确认后总表才恢复可执行。已开始或完成的作业保留原计划时间。"
+        />
+      ) : (
+        <Alert type="success" showIcon message="无花期变更待复核项，总表可执行" />
+      )}
 
       {conflicts.length > 0 ? (
         <Alert
@@ -176,6 +204,8 @@ export default function SchedulePage(): JSX.Element {
                   ) : (
                     <Tag>尚未安排群体</Tag>
                   )}
+                  {row.pendingDrops > 0 ? <Tag color="orange">{row.pendingDrops} 个投放点待确认</Tag> : null}
+                  {row.pendingRoutes > 0 ? <Tag color="orange">{row.pendingRoutes} 段路线待确认</Tag> : null}
                   {row.conflicted ? <Tag color="red">存在冲突</Tag> : null}
                 </Space>
               </div>
@@ -220,6 +250,17 @@ export default function SchedulePage(): JSX.Element {
                   {record.placedCodes.length > 0 ? record.placedCodes.map((code) => <Tag key={code}>{code}</Tag>) : <span>—</span>}
                 </Space>
               )
+            },
+            {
+              title: '复核',
+              key: 'review',
+              width: 110,
+              render: (_, record: ScheduleRow) =>
+                record.pendingDrops + record.pendingRoutes > 0 ? (
+                  <Tag color="orange">待复核 {record.pendingDrops + record.pendingRoutes}</Tag>
+                ) : (
+                  <Tag color="green">已确认</Tag>
+                )
             },
             {
               title: '状态',

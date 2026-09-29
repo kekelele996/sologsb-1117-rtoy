@@ -4,9 +4,10 @@ import SchedulePage from '@/pages/SchedulePage'
 import OrchardsPage from '@/pages/OrchardsPage'
 import ColoniesPage from '@/pages/ColoniesPage'
 import RoutesPage from '@/pages/RoutesPage'
+import ReviewPage from '@/pages/ReviewPage'
 import ExportPage from '@/pages/ExportPage'
 
-/** 前端路由：/ /orchards /colonies /routes /export */
+/** 前端路由：/ /orchards /colonies /routes /review /export */
 export function AppRoutes(): JSX.Element {
   return (
     <Routes>
@@ -15,6 +16,7 @@ export function AppRoutes(): JSX.Element {
         <Route path="/orchards" element={<OrchardsPage />} />
         <Route path="/colonies" element={<ColoniesPage />} />
         <Route path="/routes" element={<RoutesPage />} />
+        <Route path="/review" element={<ReviewPage />} />
         <Route path="/export" element={<ExportPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

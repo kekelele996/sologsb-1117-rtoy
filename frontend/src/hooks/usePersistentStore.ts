@@ -4,7 +4,7 @@ import Dexie, { type Table } from 'dexie'
 import type { BeeColony, DropPoint, Orchard, TransitRoute } from '@/types'
 
 /** IndexedDB 数据结构版本号 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
@@ -29,7 +29,7 @@ class BeeRouteDb extends Dexie {
       meta: 'key'
     })
     // v2：投放点新增「可容纳箱数」字段，迁移时为历史投放点补齐（按 8 箱兜底）
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         orchards: 'id, name, crop, bloomStart',
         colonies: 'id, code, status, currentOrchardId',
@@ -45,6 +45,38 @@ class BeeRouteDb extends Dexie {
             if (!point.capacityBoxes) {
               point.capacityBoxes = 8
             }
+          })
+      })
+    // v3：花期变更复核——投放点 / 路线新增执行状态、复核状态与待确认建议时间，历史记录视为已确认
+    this.version(SCHEMA_VERSION)
+      .stores({
+        orchards: 'id, name, crop, bloomStart',
+        colonies: 'id, code, status, currentOrchardId',
+        dropPoints: 'id, orchardId, code, dropWindow, reviewStatus',
+        routes: 'id, fromDropId, toDropId, departAt, reviewStatus',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<DropPoint, string>('dropPoints')
+          .toCollection()
+          .modify((point) => {
+            point.executionStatus ??= '未开始'
+            point.reviewStatus ??= '已确认'
+            point.proposedDropWindow ??= ''
+            point.proposedWithdrawTime ??= ''
+            point.bloomAnchorStart ??= ''
+            point.bloomAnchorEnd ??= ''
+          })
+        await tx
+          .table<TransitRoute, string>('routes')
+          .toCollection()
+          .modify((route) => {
+            route.executionStatus ??= '未开始'
+            route.reviewStatus ??= '已确认'
+            route.proposedDepartAt ??= ''
+            route.bloomAnchorStart ??= ''
+            route.bloomAnchorEnd ??= ''
           })
       })
   }
@@ -189,7 +221,13 @@ export async function seedDemoData(): Promise<void> {
       dropWindow: `${year}-04-07`,
       withdrawTime: `${year}-04-19`,
       owner: '周园主',
-      colonyCodes: ['Q-01']
+      colonyCodes: ['Q-01'],
+      executionStatus: '未开始',
+      reviewStatus: '已确认',
+      proposedDropWindow: '',
+      proposedWithdrawTime: '',
+      bloomAnchorStart: '',
+      bloomAnchorEnd: ''
     },
     {
       id: 'dp_b01',
@@ -203,7 +241,13 @@ export async function seedDemoData(): Promise<void> {
       dropWindow: `${year}-03-27`,
       withdrawTime: `${year}-04-13`,
       owner: '合作社',
-      colonyCodes: ['Q-02']
+      colonyCodes: ['Q-02'],
+      executionStatus: '进行中',
+      reviewStatus: '已确认',
+      proposedDropWindow: '',
+      proposedWithdrawTime: '',
+      bloomAnchorStart: '',
+      bloomAnchorEnd: ''
     },
     {
       id: 'dp_c01',
@@ -217,7 +261,13 @@ export async function seedDemoData(): Promise<void> {
       dropWindow: `${year}-04-11`,
       withdrawTime: `${year}-04-22`,
       owner: '李园主',
-      colonyCodes: ['Q-02']
+      colonyCodes: ['Q-02'],
+      executionStatus: '未开始',
+      reviewStatus: '已确认',
+      proposedDropWindow: '',
+      proposedWithdrawTime: '',
+      bloomAnchorStart: '',
+      bloomAnchorEnd: ''
     }
   ])
 
@@ -231,7 +281,12 @@ export async function seedDemoData(): Promise<void> {
       vehicleType: '农用三轮',
       departAt: `${year}-04-13T06:30`,
       riskNote: '西沟坡道窄，雨天泥泞，需小车倒运',
-      actualNote: '待执行'
+      actualNote: '待执行',
+      executionStatus: '未开始',
+      reviewStatus: '已确认',
+      proposedDepartAt: '',
+      bloomAnchorStart: '',
+      bloomAnchorEnd: ''
     }
   ])
 }
