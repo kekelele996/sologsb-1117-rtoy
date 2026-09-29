@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Col, Radio, Row, Space, Table, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, Radio, Row, Space, Table, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import type { BeeColony, DropPoint, Orchard, TransitRoute } from '@/types'
 import { suggestColonyBoxes } from '@/types'
@@ -10,6 +10,7 @@ import { droppointStore } from '@/stores/droppointStore'
 import { routeStore } from '@/stores/routeStore'
 import { downloadCsv, downloadJson } from '@/utils/export'
 import { bloomDays } from '@/utils/geo'
+import { isPending } from '@/utils/schedule'
 
 interface ScheduleExportRow {
   orchard: string
@@ -35,11 +36,16 @@ export default function ExportPage(): JSX.Element {
 
   const orchardName = (id: string): string => orchards.find((item) => item.id === id)?.name ?? '未知地块'
 
-  /** 授粉安排清单：地块 × 投放点 × 群号 */
+  /** 待确认项不进导出与打印，只带已确认的（新）时间 */
+  const confirmedPoints = useMemo(() => dropPoints.filter((point) => !isPending(point)), [dropPoints])
+  const confirmedRoutes = useMemo(() => routes.filter((route) => !isPending(route)), [routes])
+  const excludedCount = dropPoints.length - confirmedPoints.length + (routes.length - confirmedRoutes.length)
+
+  /** 授粉安排清单：地块 × 投放点 × 群号（仅已确认） */
   const scheduleRows = useMemo<ScheduleExportRow[]>(() => {
     const rows: ScheduleExportRow[] = []
     orchards.forEach((orchard: Orchard) => {
-      const points = dropPoints.filter((item) => item.orchardId === orchard.id)
+      const points = confirmedPoints.filter((item) => item.orchardId === orchard.id)
       const base = {
         orchard: orchard.name,
         crop: orchard.crop,
@@ -77,11 +83,11 @@ export default function ExportPage(): JSX.Element {
       })
     })
     return rows
-  }, [orchards, dropPoints])
+  }, [orchards, confirmedPoints])
 
   const routeRows = useMemo(
     () =>
-      routes.map((route: TransitRoute) => {
+      confirmedRoutes.map((route: TransitRoute) => {
         const from = dropPoints.find((item) => item.id === route.fromDropId)
         const to = dropPoints.find((item) => item.id === route.toDropId)
         return {
@@ -96,7 +102,7 @@ export default function ExportPage(): JSX.Element {
         }
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [routes, dropPoints, orchards]
+    [confirmedRoutes, dropPoints, orchards]
   )
 
   function exportSchedule(): void {
@@ -169,13 +175,22 @@ export default function ExportPage(): JSX.Element {
           <Button onClick={exportBackup}>导出全量 JSON 备份</Button>
           <Tag>地块 {orchards.length}</Tag>
           <Tag>蜂群 {colonies.length}</Tag>
-          <Tag>投放点 {dropPoints.length}</Tag>
-          <Tag>路线 {routes.length}</Tag>
+          <Tag>投放点 {confirmedPoints.length}/{dropPoints.length}</Tag>
+          <Tag>路线 {confirmedRoutes.length}/{routes.length}</Tag>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             生成时间 {dayjs().format('YYYY-MM-DD HH:mm')}
           </Typography.Text>
         </Space>
       </Card>
+
+      {excludedCount > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`已排除 ${excludedCount} 项花期变更待确认安排（投放点 ${dropPoints.length - confirmedPoints.length} · 路线 ${routes.length - confirmedRoutes.length}）`}
+          description="CSV 与打印视图只带已确认的（新）时间；待确认项仍按旧花期挂起，请到「季内授粉安排总表」逐项重排确认后再导出。全量 JSON 备份不受影响，包含待确认项的建议时间。"
+        />
+      ) : null}
 
       <div className={orientation === 'landscape' ? 'print-landscape' : 'print-portrait'}>
         <Card size="small" title={`授粉安排清单（${scheduleRows.length} 行）`} style={{ marginBottom: 16 }}>
@@ -241,7 +256,7 @@ export default function ExportPage(): JSX.Element {
         <Col xs={24} md={12}>
           <Card size="small" title="导出说明">
             <Typography.Paragraph style={{ fontSize: 13, marginBottom: 6 }}>
-              1. 授粉安排清单按「地块 × 投放点 × 群号」展开，可直接给蜂场与园主核对；
+              1. 授粉安排清单按「地块 × 投放点 × 群号」展开，可直接给蜂场与园主核对；花期变更待确认项不带入导出，仅含已确认的（新）时间；
             </Typography.Paragraph>
             <Typography.Paragraph style={{ fontSize: 13, marginBottom: 6 }}>
               2. 转场路线表包含里程、耗时、车辆与风险备注，实际执行情况可在“转场路线规划”页回填；

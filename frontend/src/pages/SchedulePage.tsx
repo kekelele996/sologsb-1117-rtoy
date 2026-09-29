@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { Alert, Card, Col, Row, Segmented, Space, Table, Tag, Typography } from 'antd'
-import type { BeeColony, DropPoint, Orchard } from '@/types'
+import { Alert, Button, Card, Col, DatePicker, Row, Segmented, Space, Table, Tabs, Tag, Typography, message } from 'antd'
+import dayjs from 'dayjs'
+import type { BeeColony, DropPoint, Orchard, TransitRoute } from '@/types'
 import FlowerWindowBar from '@/components/common/FlowerWindowBar'
 import RouteMap from '@/components/common/RouteMap'
 import StatusTag from '@/components/common/StatusTag'
@@ -10,6 +11,7 @@ import { colonyStore } from '@/stores/colonyStore'
 import { droppointStore } from '@/stores/droppointStore'
 import { routeStore } from '@/stores/routeStore'
 import { bloomDays, flowerWindowOverlap } from '@/utils/geo'
+import { isPending, pendingTotal } from '@/utils/schedule'
 import { suggestColonyBoxes } from '@/types'
 
 interface Placement {
@@ -36,9 +38,10 @@ interface ScheduleRow {
   placedCodes: string[]
   dropCodes: string[]
   conflicted: boolean
+  pendingCount: number
 }
 
-/** 季内授粉安排总表：日期条带展示花期与已投放群体，冲突处标红 */
+/** 季内授粉安排总表：日期条带展示花期与已投放群体，冲突处标红；花期变更后在此逐项复核 */
 export default function SchedulePage(): JSX.Element {
   const orchards = usePersistentStore(orchardStore, (state) => state.rows)
   const colonies = usePersistentStore(colonyStore, (state) => state.rows)
@@ -46,7 +49,11 @@ export default function SchedulePage(): JSX.Element {
   const routes = usePersistentStore(routeStore, (state) => state.rows)
   const [scope, setScope] = useState<'all' | 'conflict'>('all')
 
-  /** 由投放点的群号安排 + 蜂群当前所在地块，汇总出「某群在某地块」的时间占用 */
+  const pendingPoints = useMemo(() => dropPoints.filter(isPending), [dropPoints])
+  const pendingRoutes = useMemo(() => routes.filter(isPending), [routes])
+  const pendingCount = pendingTotal(dropPoints, routes)
+
+  /** 由投放点的群号安排 + 蜂群当前所在地块，汇总出「某群在某地块」的时间占用（只用已确认时间） */
   const placements = useMemo<Placement[]>(() => {
     const list: Placement[] = []
     dropPoints.forEach((point: DropPoint) => {
@@ -107,10 +114,11 @@ export default function SchedulePage(): JSX.Element {
           suggest: suggestColonyBoxes(orchard),
           placedCodes: Array.from(new Set(related.map((item) => item.colonyCode))),
           dropCodes: Array.from(new Set(related.map((item) => item.dropCode))),
-          conflicted: conflicts.some((item) => item.a.orchardId === orchard.id || item.b.orchardId === orchard.id)
+          conflicted: conflicts.some((item) => item.a.orchardId === orchard.id || item.b.orchardId === orchard.id),
+          pendingCount: dropPoints.filter((point) => point.orchardId === orchard.id && isPending(point)).length
         }
       }),
-    [orchards, placements, conflicts]
+    [orchards, placements, conflicts, dropPoints]
   )
 
   const visibleRows = scope === 'conflict' ? rows.filter((row) => row.conflicted) : rows
@@ -120,13 +128,19 @@ export default function SchedulePage(): JSX.Element {
     return orchards.find((item) => item.id === id)?.name ?? '未知地块'
   }
 
+  async function confirmAll(): Promise<void> {
+    await droppointStore.getState().confirmAllPending()
+    await routeStore.getState().confirmAllPending()
+    message.success('全部待复核项已按建议时间确认，总表恢复可执行')
+  }
+
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <h2 className="page-title">季内授粉安排总表</h2>
           <p className="page-sub">
-            按日期条带展示各地块盛花期与已投放群体；同一蜂群在同一天被排入花期重叠的两个地块时进入冲突列表并标红。
+            按日期条带展示各地块盛花期与已投放群体；花期临时变更后，未开始的投放与转场先转待确认，逐项重排确认后总表才恢复可执行。
           </p>
         </div>
         <Segmented
@@ -138,6 +152,107 @@ export default function SchedulePage(): JSX.Element {
           ]}
         />
       </div>
+
+      {pendingCount > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`总表暂不可执行：尚有 ${pendingCount} 项花期变更待复核（投放点 ${pendingPoints.length} · 路线 ${pendingRoutes.length}）`}
+          description="下列未开始的安排仍按旧花期挂起，请逐项重排新时间并确认；全部确认后总表自动恢复可执行。已开始或完成的作业保留原计划时间。导出仅包含已确认的新时间。"
+          action={
+            <Button type="primary" onClick={() => void confirmAll()}>
+              按建议全部确认
+            </Button>
+          }
+        />
+      ) : (
+        <Alert type="success" showIcon message="总表可执行：没有待复核的花期变更" />
+      )}
+
+      {pendingCount > 0 ? (
+        <Card size="small" title={`花期变更复核（待复核 ${pendingCount} 项）`} extra={<Tag color="orange">不可执行</Tag>}>
+          <Tabs
+            items={[
+              {
+                key: 'points',
+                label: `投放点（${pendingPoints.length}）`,
+                children: (
+                  <Table<DropPoint>
+                    size="small"
+                    pagination={false}
+                    dataSource={pendingPoints}
+                    rowKey="id"
+                    columns={[
+                      { title: '编号', dataIndex: 'code', key: 'code', width: 90 },
+                      {
+                        title: '地块',
+                        key: 'orchard',
+                        width: 140,
+                        render: (_, record) => orchardName(record.orchardId)
+                      },
+                      {
+                        title: '原投放窗',
+                        dataIndex: 'dropWindow',
+                        key: 'oldDrop',
+                        width: 120,
+                        render: (value: string) => <Typography.Text delete type="secondary">{value}</Typography.Text>
+                      },
+                      {
+                        title: '原撤场',
+                        dataIndex: 'withdrawTime',
+                        key: 'oldWith',
+                        width: 120,
+                        render: (value: string) => <Typography.Text delete type="secondary">{value}</Typography.Text>
+                      },
+                      {
+                        title: '重排投放窗 / 撤场',
+                        key: 'proposed',
+                        render: (_, record) => <PointReplanEditor point={record} />
+                      }
+                    ]}
+                  />
+                )
+              },
+              {
+                key: 'routes',
+                label: `转场路线（${pendingRoutes.length}）`,
+                children: (
+                  <Table<TransitRoute>
+                    size="small"
+                    pagination={false}
+                    dataSource={pendingRoutes}
+                    rowKey="id"
+                    columns={[
+                      {
+                        title: '路段',
+                        key: 'leg',
+                        width: 180,
+                        render: (_, record) => {
+                          const from = dropPoints.find((item) => item.id === record.fromDropId)
+                          const to = dropPoints.find((item) => item.id === record.toDropId)
+                          return `${from?.code ?? '—'} → ${to?.code ?? '—'}`
+                        }
+                      },
+                      {
+                        title: '原出发时刻',
+                        dataIndex: 'departAt',
+                        key: 'oldDepart',
+                        width: 180,
+                        render: (value: string) => <Typography.Text delete type="secondary">{value}</Typography.Text>
+                      },
+                      {
+                        title: '重排出发时刻',
+                        key: 'proposed',
+                        render: (_, record) => <RouteReplanEditor route={record} />
+                      }
+                    ]}
+                  />
+                )
+              }
+            ]}
+          />
+        </Card>
+      ) : null}
 
       {conflicts.length > 0 ? (
         <Alert
@@ -163,7 +278,11 @@ export default function SchedulePage(): JSX.Element {
         <Col xs={24} xl={14}>
           <Card size="small" title="花期条带与已投放群体" styles={{ body: { display: 'flex', flexDirection: 'column', gap: 12 } }}>
             {visibleRows.map((row) => (
-              <div key={row.key} className={row.conflicted ? 'conflict-row' : ''} style={{ padding: 8, borderRadius: 8 }}>
+              <div
+                key={row.key}
+                className={row.conflicted ? 'conflict-row' : row.pendingCount > 0 ? 'pending-row' : ''}
+                style={{ padding: 8, borderRadius: 8 }}
+              >
                 <FlowerWindowBar orchard={row.orchard} others={orchards.filter((item) => item.id !== row.orchard.id)} width={420} />
                 <Space wrap size={4} style={{ marginTop: 6 }}>
                   <Tag>建议 {row.suggest} 箱</Tag>
@@ -176,6 +295,7 @@ export default function SchedulePage(): JSX.Element {
                   ) : (
                     <Tag>尚未安排群体</Tag>
                   )}
+                  {row.pendingCount > 0 ? <Tag color="orange">待复核 {row.pendingCount} 项</Tag> : null}
                   {row.conflicted ? <Tag color="red">存在冲突</Tag> : null}
                 </Space>
               </div>
@@ -195,7 +315,7 @@ export default function SchedulePage(): JSX.Element {
           dataSource={rows}
           rowKey="key"
           pagination={false}
-          rowClassName={(record) => (record.conflicted ? 'conflict-row' : '')}
+          rowClassName={(record) => (record.conflicted ? 'conflict-row' : record.pendingCount > 0 ? 'pending-row' : '')}
           columns={[
             { title: '地块', dataIndex: ['orchard', 'name'], key: 'name' },
             { title: '作物', dataIndex: ['orchard', 'crop'], key: 'crop', width: 90 },
@@ -222,6 +342,13 @@ export default function SchedulePage(): JSX.Element {
               )
             },
             {
+              title: '复核状态',
+              key: 'review',
+              width: 130,
+              render: (_, record: ScheduleRow) =>
+                record.pendingCount > 0 ? <Tag color="orange">待复核 {record.pendingCount}</Tag> : <Tag color="green">已确认</Tag>
+            },
+            {
               title: '状态',
               key: 'status',
               width: 120,
@@ -244,5 +371,73 @@ export default function SchedulePage(): JSX.Element {
         </Space>
       </Card>
     </div>
+  )
+}
+
+/** 投放点逐项重排编辑器：可改建议投放窗与撤场日，确认后写回正式时间 */
+function PointReplanEditor({ point }: { point: DropPoint }): JSX.Element {
+  const [dropWindow, setDropWindow] = useState(dayjs(point.proposedDropWindow ?? point.dropWindow))
+  const [withdrawTime, setWithdrawTime] = useState(dayjs(point.proposedWithdrawTime ?? point.withdrawTime))
+  const [saving, setSaving] = useState(false)
+
+  async function confirm(): Promise<void> {
+    if (!dropWindow || !withdrawTime) {
+      message.warning('请选择投放窗与撤场时间')
+      return
+    }
+    if (withdrawTime.isBefore(dropWindow, 'day')) {
+      message.warning('撤场时间不能早于投放时间窗')
+      return
+    }
+    setSaving(true)
+    try {
+      await droppointStore.getState().confirmSchedule(point.id, {
+        dropWindow: dropWindow.format('YYYY-MM-DD'),
+        withdrawTime: withdrawTime.format('YYYY-MM-DD')
+      })
+      message.success(`投放点 ${point.code} 已按新时间确认`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Space wrap size={8}>
+      <DatePicker value={dropWindow} onChange={(value) => value && setDropWindow(value)} allowClear={false} />
+      <span>~</span>
+      <DatePicker value={withdrawTime} onChange={(value) => value && setWithdrawTime(value)} allowClear={false} />
+      <Button type="primary" size="small" loading={saving} onClick={() => void confirm()}>
+        确认
+      </Button>
+    </Space>
+  )
+}
+
+/** 路线逐项重排编辑器：可改建议出发时刻，确认后写回正式时刻 */
+function RouteReplanEditor({ route }: { route: TransitRoute }): JSX.Element {
+  const [departAt, setDepartAt] = useState(dayjs(route.proposedDepartAt ?? route.departAt))
+  const [saving, setSaving] = useState(false)
+
+  async function confirm(): Promise<void> {
+    if (!departAt) {
+      message.warning('请选择出发时刻')
+      return
+    }
+    setSaving(true)
+    try {
+      await routeStore.getState().confirmSchedule(route.id, departAt.format('YYYY-MM-DDTHH:mm'))
+      message.success('该段转场已按新时刻确认')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Space wrap size={8}>
+      <DatePicker showTime={{ minuteStep: 10 }} value={departAt} onChange={(value) => value && setDepartAt(value)} allowClear={false} />
+      <Button type="primary" size="small" loading={saving} onClick={() => void confirm()}>
+        确认
+      </Button>
+    </Space>
   )
 }

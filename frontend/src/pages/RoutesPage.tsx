@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Col, DatePicker, Empty, Form, Input, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, DatePicker, Empty, Form, Input, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
 import type { DropPoint, TransitRoute } from '@/types'
 import { VEHICLE_TYPES } from '@/types'
@@ -9,6 +9,7 @@ import { orchardStore } from '@/stores/orchardStore'
 import { droppointStore } from '@/stores/droppointStore'
 import { routeStore } from '@/stores/routeStore'
 import { distanceKm, estimateDurationH, routeLegs } from '@/utils/geo'
+import { isPending } from '@/utils/schedule'
 
 /** 转场路线规划：地图上依次选点生成顺序与里程，支持拖动调整顺序并重算 */
 export default function RoutesPage(): JSX.Element {
@@ -28,6 +29,8 @@ export default function RoutesPage(): JSX.Element {
   )
 
   const legs = useMemo(() => routeLegs(ordered.map((item) => ({ longitude: item.longitude, latitude: item.latitude }))), [ordered])
+
+  const pendingRouteCount = useMemo(() => routes.filter(isPending).length, [routes])
 
   function orchardName(orchardId: string): string {
     return orchards.find((item) => item.id === orchardId)?.name ?? '未知地块'
@@ -71,6 +74,10 @@ export default function RoutesPage(): JSX.Element {
       message.warning('至少选择 2 个投放点才能生成转场路线')
       return
     }
+    if (pendingRouteCount > 0) {
+      message.warning(`尚有 ${pendingRouteCount} 段路线待花期复核，请先在总表逐项确认后再整表重排`)
+      return
+    }
     await routeStore.getState().rebuildFromOrder(orderedIds, {
       vehicleType,
       departAt: departAt.format('YYYY-MM-DDTHH:mm'),
@@ -95,6 +102,15 @@ export default function RoutesPage(): JSX.Element {
           </Button>
         </Space>
       </div>
+
+      {pendingRouteCount > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`${pendingRouteCount} 段转场路线因花期变更待确认，总表暂不可执行`}
+          description="请到「季内授粉安排总表」逐项重排出发时刻并确认；待确认期间路线仍按原计划时刻展示，整表重排已暂停。"
+        />
+      ) : null}
 
       <Row gutter={16}>
         <Col xs={24} xl={15}>
@@ -220,7 +236,29 @@ export default function RoutesPage(): JSX.Element {
             { title: '里程（km）', dataIndex: 'distanceKm', key: 'km', width: 110 },
             { title: '预计耗时（h）', dataIndex: 'durationH', key: 'hour', width: 130 },
             { title: '车辆', dataIndex: 'vehicleType', key: 'vehicle', width: 110 },
-            { title: '出发时刻', dataIndex: 'departAt', key: 'depart', width: 160 },
+            {
+              title: '出发时刻',
+              key: 'depart',
+              width: 200,
+              render: (_, record: TransitRoute) =>
+                isPending(record) ? (
+                  <Space size={4}>
+                    <Typography.Text delete type="secondary" style={{ fontSize: 12 }}>
+                      {record.departAt}
+                    </Typography.Text>
+                    <Tag color="orange">建议 {record.proposedDepartAt}</Tag>
+                  </Space>
+                ) : (
+                  record.departAt
+                )
+            },
+            {
+              title: '复核',
+              key: 'review',
+              width: 100,
+              render: (_, record: TransitRoute) =>
+                isPending(record) ? <Tag color="orange">待确认</Tag> : <Tag color="green">已确认</Tag>
+            },
             { title: '风险备注', dataIndex: 'riskNote', key: 'risk', render: (value: string) => value || '—' },
             { title: '实际记录', dataIndex: 'actualNote', key: 'actual', width: 120 },
             {

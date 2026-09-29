@@ -71,6 +71,9 @@ body {
 .conflict-row {
   background: #fff1f0;
 }
+.pending-row {
+  background: #fff7e6;
+}
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }

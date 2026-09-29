@@ -1,10 +1,11 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Layout, Menu, Statistic, Typography } from 'antd'
+import { Badge, Layout, Menu, Statistic, Typography } from 'antd'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { orchardStore } from '@/stores/orchardStore'
 import { colonyStore } from '@/stores/colonyStore'
 import { droppointStore } from '@/stores/droppointStore'
 import { routeStore } from '@/stores/routeStore'
+import { pendingTotal } from '@/utils/schedule'
 
 const { Sider, Header, Content } = Layout
 
@@ -24,6 +25,7 @@ export default function AppLayout(): JSX.Element {
   const routes = usePersistentStore(routeStore, (state) => state.rows)
 
   const totalKm = Math.round(routes.reduce((sum, item) => sum + item.distanceKm, 0) * 100) / 100
+  const pendingCount = pendingTotal(dropPoints, routes)
 
   return (
     <Layout className="app-shell">
@@ -41,7 +43,16 @@ export default function AppLayout(): JSX.Element {
           selectedKeys={[window.location.pathname]}
           items={NAV.map((item) => ({
             key: item.key,
-            label: <NavLink to={item.key}>{item.label}</NavLink>
+            label:
+              item.key === '/' && pendingCount > 0 ? (
+                <NavLink to={item.key}>
+                  <Badge count={pendingCount} size="small" offset={[8, -2]} title="花期变更待复核">
+                    {item.label}
+                  </Badge>
+                </NavLink>
+              ) : (
+                <NavLink to={item.key}>{item.label}</NavLink>
+              )
           }))}
         />
         <div style={{ padding: 16 }}>

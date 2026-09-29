@@ -4,7 +4,7 @@ import Dexie, { type Table } from 'dexie'
 import type { BeeColony, DropPoint, Orchard, TransitRoute } from '@/types'
 
 /** IndexedDB 数据结构版本号 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
@@ -45,6 +45,29 @@ class BeeRouteDb extends Dexie {
             if (!point.capacityBoxes) {
               point.capacityBoxes = 8
             }
+          })
+      })
+    // v3：投放点 / 路线新增花期变更复核状态，历史数据一律视为「已确认」
+    this.version(SCHEMA_VERSION)
+      .stores({
+        orchards: 'id, name, crop, bloomStart',
+        colonies: 'id, code, status, currentOrchardId',
+        dropPoints: 'id, orchardId, code, dropWindow, scheduleStatus',
+        routes: 'id, fromDropId, toDropId, departAt, scheduleStatus',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<DropPoint, string>('dropPoints')
+          .toCollection()
+          .modify((point) => {
+            point.scheduleStatus = '已确认'
+          })
+        await tx
+          .table<TransitRoute, string>('routes')
+          .toCollection()
+          .modify((route) => {
+            route.scheduleStatus = '已确认'
           })
       })
   }
@@ -189,7 +212,8 @@ export async function seedDemoData(): Promise<void> {
       dropWindow: `${year}-04-07`,
       withdrawTime: `${year}-04-19`,
       owner: '周园主',
-      colonyCodes: ['Q-01']
+      colonyCodes: ['Q-01'],
+      scheduleStatus: '已确认'
     },
     {
       id: 'dp_b01',
@@ -203,7 +227,8 @@ export async function seedDemoData(): Promise<void> {
       dropWindow: `${year}-03-27`,
       withdrawTime: `${year}-04-13`,
       owner: '合作社',
-      colonyCodes: ['Q-02']
+      colonyCodes: ['Q-02'],
+      scheduleStatus: '已确认'
     },
     {
       id: 'dp_c01',
@@ -217,7 +242,8 @@ export async function seedDemoData(): Promise<void> {
       dropWindow: `${year}-04-11`,
       withdrawTime: `${year}-04-22`,
       owner: '李园主',
-      colonyCodes: ['Q-02']
+      colonyCodes: ['Q-02'],
+      scheduleStatus: '已确认'
     }
   ])
 
@@ -231,7 +257,8 @@ export async function seedDemoData(): Promise<void> {
       vehicleType: '农用三轮',
       departAt: `${year}-04-13T06:30`,
       riskNote: '西沟坡道窄，雨天泥泞，需小车倒运',
-      actualNote: '待执行'
+      actualNote: '待执行',
+      scheduleStatus: '已确认'
     }
   ])
 }

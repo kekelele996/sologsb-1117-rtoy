@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Typography, message } from 'antd'
 import dayjs from 'dayjs'
-import type { DropPoint, Orchard } from '@/types'
+import type { DropPoint, Orchard, TransitRoute } from '@/types'
 import { ACCESSIBILITIES, CROPS, suggestColonyBoxes } from '@/types'
 import CoordPicker from '@/components/common/CoordPicker'
 import FlowerWindowBar from '@/components/common/FlowerWindowBar'
@@ -9,7 +9,9 @@ import { usePersistentStore } from '@/hooks/usePersistentStore'
 import { orchardStore } from '@/stores/orchardStore'
 import { droppointStore } from '@/stores/droppointStore'
 import { colonyStore } from '@/stores/colonyStore'
+import { routeStore } from '@/stores/routeStore'
 import { bloomDays } from '@/utils/geo'
+import { buildBloomImpact, isPending, shiftText, type BloomImpact } from '@/utils/schedule'
 import { uid } from '@/utils/id'
 
 interface OrchardFormValues {
@@ -40,11 +42,14 @@ export default function OrchardsPage(): JSX.Element {
   const orchards = usePersistentStore(orchardStore, (state) => state.rows)
   const dropPoints = usePersistentStore(droppointStore, (state) => state.rows)
   const colonies = usePersistentStore(colonyStore, (state) => state.rows)
+  const routes = usePersistentStore(routeStore, (state) => state.rows)
 
   const [orchardModal, setOrchardModal] = useState(false)
   const [editingOrchard, setEditingOrchard] = useState<Orchard | null>(null)
   const [coord, setCoord] = useState({ longitude: 107.41, latitude: 34.61 })
   const [orchardForm] = Form.useForm<OrchardFormValues>()
+  /** 花期变更影响清单（保存新花期时弹出复核） */
+  const [impact, setImpact] = useState<{ row: Orchard; result: BloomImpact } | null>(null)
 
   const [dropModal, setDropModal] = useState(false)
   const [dropOwner, setDropOwner] = useState<Orchard | null>(null)
@@ -117,9 +122,48 @@ export default function OrchardsPage(): JSX.Element {
         .filter((item) => Number.isFinite(item) && item > 0),
       note: values.note?.trim() ?? ''
     }
+
+    // 编辑既有地块且盛花期发生变化：先列出受影响的投放点与路线，确认后才落库
+    if (
+      editingOrchard &&
+      (editingOrchard.bloomStart !== row.bloomStart || editingOrchard.bloomEnd !== row.bloomEnd)
+    ) {
+      const result = buildBloomImpact(editingOrchard, row, dropPoints, routes)
+      if (result.points.length > 0 || result.routes.length > 0) {
+        setImpact({ row, result })
+        return
+      }
+    }
+
+    await saveOrchard(row)
+    setOrchardModal(false)
+  }
+
+  async function saveOrchard(row: Orchard): Promise<void> {
     await orchardStore.getState().save(row)
     message.success(`地块「${row.name}」已保存，建议蜂群 ${suggestColonyBoxes(row)} 箱`)
+  }
+
+  /** 确认花期变更：保存新花期，未开始的投放点/路线转待确认；已开始/完成的保留原时间 */
+  async function confirmBloomImpact(): Promise<void> {
+    if (!impact) return
+    const { row, result } = impact
+    await saveOrchard(row)
+    await droppointStore.getState().proposeForBloom(result.points)
+    await routeStore.getState().proposeForBloom(result.routes)
     setOrchardModal(false)
+    setImpact(null)
+    message.warning(
+      result.pendingCount > 0
+        ? `新花期已保存：${result.pendingCount} 项未开始的安排已转待确认，请在总表逐项重排确认；已开始/完成的作业保留原时间`
+        : '新花期已保存：相关作业均已开始或完成，全部保留原计划时间'
+    )
+  }
+
+  function routeLabel(route: TransitRoute): string {
+    const from = dropPoints.find((item) => item.id === route.fromDropId)
+    const to = dropPoints.find((item) => item.id === route.toDropId)
+    return `${from?.code ?? '—'} → ${to?.code ?? '—'}`
   }
 
   async function removeOrchard(orchard: Orchard): Promise<void> {
@@ -164,7 +208,8 @@ export default function OrchardsPage(): JSX.Element {
       dropWindow: values.dropWindow.format('YYYY-MM-DD'),
       withdrawTime: values.withdrawTime.format('YYYY-MM-DD'),
       owner: values.owner?.trim() ?? '',
-      colonyCodes: values.colonyCodes ?? []
+      colonyCodes: values.colonyCodes ?? [],
+      scheduleStatus: '已确认'
     }
     await droppointStore.getState().save(row)
     message.success(`投放点 ${row.code} 已保存`)
@@ -229,7 +274,17 @@ export default function OrchardsPage(): JSX.Element {
                 columns={[
                   { title: '编号', dataIndex: 'code', key: 'code', width: 80 },
                   { title: '可容纳', dataIndex: 'capacityBoxes', key: 'cap', width: 80, render: (value: number) => `${value} 箱` },
-                  { title: '投放窗', dataIndex: 'dropWindow', key: 'win', width: 110 },
+                  {
+                    title: '投放窗',
+                    key: 'win',
+                    width: 150,
+                    render: (_, record: DropPoint) => (
+                      <Space size={4}>
+                        <span>{record.dropWindow}</span>
+                        {isPending(record) ? <Tag color="orange">待复核</Tag> : null}
+                      </Space>
+                    )
+                  },
                   { title: '撤场', dataIndex: 'withdrawTime', key: 'with', width: 110 },
                   {
                     title: '安排群号',
@@ -365,6 +420,110 @@ export default function OrchardsPage(): JSX.Element {
             <CoordPicker value={dropCoord} onChange={setDropCoord} orchards={orchards} dropPoints={dropPoints} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`花期变更复核 · ${impact?.row.name ?? ''}`}
+        open={impact !== null}
+        onCancel={() => setImpact(null)}
+        onOk={() => void confirmBloomImpact()}
+        width={860}
+        zIndex={1001}
+        okText="保存新花期并转待确认"
+        cancelText="返回修改"
+      >
+        {impact ? (
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <Alert
+              type="warning"
+              showIcon
+              message={`盛花期整体${shiftText(impact.result.startShift)}（起）/ ${shiftText(impact.result.endShift)}（止），下列安排受影响`}
+              description={
+                impact.result.pendingCount > 0
+                  ? `共 ${impact.result.pendingCount} 项尚未开始的投放/转场将转为「待确认」，需到「季内授粉安排总表」逐项重排并确认后，总表才恢复可执行；已开始或完成的作业保留原计划时间，不会被改写。`
+                  : '受影响的作业均已开始或完成，全部保留原计划时间，不产生待确认项。'
+              }
+            />
+            <div>
+              <Typography.Text strong>受影响投放点（{impact.result.points.length}）</Typography.Text>
+              <Table
+                size="small"
+                style={{ marginTop: 6 }}
+                pagination={false}
+                rowKey={(record) => record.point.id}
+                dataSource={impact.result.points}
+                columns={[
+                  { title: '编号', key: 'code', width: 90, render: (_, record) => record.point.code },
+                  {
+                    title: '原投放窗 → 建议',
+                    key: 'drop',
+                    render: (_, record) =>
+                      record.started ? (
+                        <span>{record.point.dropWindow}</span>
+                      ) : (
+                        <span>
+                          {record.point.dropWindow} <Tag color="orange">{shiftText(record.startShift)}</Tag> →{' '}
+                          <b>{record.proposedDropWindow}</b>
+                        </span>
+                      )
+                  },
+                  {
+                    title: '原撤场 → 建议',
+                    key: 'withdraw',
+                    render: (_, record) =>
+                      record.started ? (
+                        <span>{record.point.withdrawTime}</span>
+                      ) : (
+                        <span>
+                          {record.point.withdrawTime} → <b>{record.proposedWithdrawTime}</b>
+                        </span>
+                      )
+                  },
+                  {
+                    title: '处理',
+                    key: 'status',
+                    width: 150,
+                    render: (_, record) =>
+                      record.started ? <Tag color="green">已开始·保留原时间</Tag> : <Tag color="orange">转待确认</Tag>
+                  }
+                ]}
+              />
+            </div>
+            <div>
+              <Typography.Text strong>受影响转场路线（{impact.result.routes.length}）</Typography.Text>
+              <Table
+                size="small"
+                style={{ marginTop: 6 }}
+                pagination={false}
+                rowKey={(record) => record.route.id}
+                dataSource={impact.result.routes}
+                columns={[
+                  { title: '路段', key: 'leg', width: 150, render: (_, record) => routeLabel(record.route) },
+                  {
+                    title: '原出发时刻 → 建议',
+                    key: 'depart',
+                    render: (_, record) =>
+                      record.started ? (
+                        <span>{record.route.departAt}</span>
+                      ) : (
+                        <span>
+                          {record.route.departAt} <Tag color="orange">{shiftText(record.shift)}</Tag> →{' '}
+                          <b>{record.proposedDepartAt}</b>
+                        </span>
+                      )
+                  },
+                  {
+                    title: '处理',
+                    key: 'status',
+                    width: 150,
+                    render: (_, record) =>
+                      record.started ? <Tag color="green">已开始·保留原时间</Tag> : <Tag color="orange">转待确认</Tag>
+                  }
+                ]}
+              />
+            </div>
+          </Space>
+        ) : null}
       </Modal>
     </div>
   )
